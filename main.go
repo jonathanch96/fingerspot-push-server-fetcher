@@ -6,8 +6,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
-	"strings"
 
 	"database/sql"
 
@@ -20,6 +18,12 @@ type FingerPrint struct {
 	PIN     string `json:"pin"`
 	AttLog  string `json:"attlog"`
 	CloudID string `json:"cloud_id"`
+}
+
+type Response struct {
+	Code    int         `json:"code"`
+	Message string      `json:"message"`
+	Data    interface{} `json:"data,omitempty"`
 }
 
 var db *sql.DB
@@ -43,15 +47,25 @@ func verifyKey(r *http.Request) bool {
 	return apiKey == expectedKey
 }
 
+func respondWithJSON(w http.ResponseWriter, code int, message string, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(Response{
+		Code:    code,
+		Message: message,
+		Data:    data,
+	})
+}
+
 func fetchFingerPrints(w http.ResponseWriter, r *http.Request) {
 	if !verifyKey(r) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		respondWithJSON(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
 
 	rows, err := db.Query("SELECT id, pin, attlog, cloud_id FROM tb_fps WHERE is_fetched = 0 LIMIT 1000")
 	if err != nil {
-		http.Error(w, "Database error", http.StatusInternalServerError)
+		respondWithJSON(w, http.StatusInternalServerError, "Database error", nil)
 		return
 	}
 	defer rows.Close()
@@ -60,45 +74,71 @@ func fetchFingerPrints(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var fp FingerPrint
 		if err := rows.Scan(&fp.ID, &fp.PIN, &fp.AttLog, &fp.CloudID); err != nil {
-			http.Error(w, "Error scanning data", http.StatusInternalServerError)
+			respondWithJSON(w, http.StatusInternalServerError, "Error scanning data", nil)
 			return
 		}
 		fingerprints = append(fingerprints, fp)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(fingerprints)
+	respondWithJSON(w, http.StatusOK, "Fingerprints fetched successfully", fingerprints)
 }
 
 func updateFetchedStatus(w http.ResponseWriter, r *http.Request) {
 	if !verifyKey(r) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		respondWithJSON(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
 
-	var ids []int
-	if err := json.NewDecoder(r.Body).Decode(&ids); err != nil {
-		http.Error(w, "Invalid JSON input", http.StatusBadRequest)
+	// Decode the JSON body into an object containing `ids`
+	var requestBody struct {
+		IDs []int `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+		respondWithJSON(w, http.StatusBadRequest, "Invalid JSON input", nil)
 		return
 	}
 
-	query := "UPDATE tb_fps SET is_fetched = 1 WHERE id IN (" + strings.Join(intSliceToStringSlice(ids), ",") + ")"
-	_, err := db.Exec(query)
+	if len(requestBody.IDs) == 0 {
+		respondWithJSON(w, http.StatusBadRequest, "No IDs provided", nil)
+		return
+	}
+
+	// Use a transaction to update records securely
+	tx, err := db.Begin()
 	if err != nil {
-		http.Error(w, "Database update error", http.StatusInternalServerError)
+		respondWithJSON(w, http.StatusInternalServerError, "Failed to begin transaction", nil)
+		log.Printf("Transaction begin error: %v", err)
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Update successful"))
-}
-
-func intSliceToStringSlice(ids []int) []string {
-	var strIDs []string
-	for _, id := range ids {
-		strIDs = append(strIDs, strconv.Itoa(id))
+	// Prepare the statement
+	stmt, err := tx.Prepare("UPDATE tb_fps SET is_fetched = 1 WHERE id = ?")
+	if err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, "Failed to prepare statement", nil)
+		log.Printf("Statement prepare error: %v", err)
+		_ = tx.Rollback()
+		return
 	}
-	return strIDs
+	defer stmt.Close()
+
+	// Execute the update for each ID
+	for _, id := range requestBody.IDs {
+		if _, err := stmt.Exec(id); err != nil {
+			respondWithJSON(w, http.StatusInternalServerError, "Failed to update records", nil)
+			log.Printf("Update error for ID %d: %v", id, err)
+			_ = tx.Rollback()
+			return
+		}
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, "Failed to commit transaction", nil)
+		log.Printf("Transaction commit error: %v", err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, "Update successful", nil)
 }
 
 func main() {
