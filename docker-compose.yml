@@ -1,0 +1,12 @@
+version: '3.9'
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - PORT=8080
+      - API_KEY=${API_KEY}
+      - DB_DSN=${DB_DSN}
+    ports:
+      - "8080:8080"

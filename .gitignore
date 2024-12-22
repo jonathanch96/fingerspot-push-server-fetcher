@@ -1,0 +1,34 @@
+# Binaries for programs and plugins
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.a
+*.out
+app
+
+# Logs and databases
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# Dependency directories
+vendor/
+
+# Environment variables
+.env
+
+# IDE or editor specific files
+.vscode/
+.idea/
+*.swp
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Docker related
+docker-compose.override.yml
+*.pid
